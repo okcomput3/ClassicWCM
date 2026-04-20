@@ -195,13 +195,18 @@ def test_animation_type():
 
 def test_import_wcm():
     """Just make sure the main module imports without error."""
-    # This doesn't start the GUI, just checks imports work
-    import wcm as wcm_mod
-    assert hasattr(wcm_mod, 'WCM')
-    assert hasattr(wcm_mod, 'MainPage')
-    assert hasattr(wcm_mod, 'PluginPage')
-    assert hasattr(wcm_mod, 'OptionWidget')
-    print("PASS: import_wcm")
+    try:
+        import wcm as wcm_mod
+        assert hasattr(wcm_mod, 'WCM')
+        assert hasattr(wcm_mod, 'MainPage')
+        assert hasattr(wcm_mod, 'PluginPage')
+        assert hasattr(wcm_mod, 'OptionWidget')
+        print("PASS: import_wcm")
+    except ValueError as e:
+        if 'Namespace Gtk not available' in str(e):
+            print("SKIP: import_wcm (GTK4 not available)")
+        else:
+            raise
 
 
 if __name__ == '__main__':
