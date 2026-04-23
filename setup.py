@@ -5,7 +5,7 @@ setup(
     name='wcm',
     version='0.1.0',
     description='Wayfire Config Manager — Python/GTK4 Edition',
-    author='Wayfire Contributors',
+    author='Andrew Pliatsikas, Scott Moreau',
     license='MIT',
     py_modules=['wcm', 'config_backend', 'metadata'],
     install_requires=[
