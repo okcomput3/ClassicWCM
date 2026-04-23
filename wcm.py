@@ -32,37 +32,80 @@ from metadata import (
 # ─── Color parsing ───────────────────────────────────────────────────────────
 
 def parse_color(color_str):
-    """Parse wayfire color (float 'R G B A' or hex '#RRGGBBAA') to Gdk.RGBA."""
+    """Parse Wayfire color strings into Gdk.RGBA.
+
+    Supported:
+      - 'R G B A'
+      - 'R G B'
+      - '#RRGGBB'
+      - '#RRGGBBAA'
+      - '\#RRGGBB'
+      - '\#RRGGBBAA'
+    """
     rgba = Gdk.RGBA()
-    if not color_str:
+
+    if color_str is None:
         rgba.red = rgba.green = rgba.blue = 0.0
         rgba.alpha = 1.0
         return rgba
-    color_str = color_str.strip()
-    if color_str.startswith('#'):
-        h = color_str[1:]
-        try:
-            if len(h) == 8:
+
+    s = str(color_str).strip()
+    if not s:
+        rgba.red = rgba.green = rgba.blue = 0.0
+        rgba.alpha = 1.0
+        return rgba
+
+    # unescape escaped hash from config strings like \#FF0000FF
+    if s.startswith(r'\#'):
+        s = s[1:]
+
+    # strip wrapping quotes
+    if len(s) >= 2 and s[0] == s[-1] and s[0] in ("'", '"'):
+        s = s[1:-1].strip()
+
+    # unescape again in case quoted string was "\#FF0000FF"
+    if s.startswith(r'\#'):
+        s = s[1:]
+
+    # trim comment-like junk, but don't break hex colors
+    if not s.startswith('#'):
+        for sep in (' ;', '\t;', ' #'):
+            if sep in s:
+                s = s.split(sep, 1)[0].strip()
+
+    # hex forms
+    if s.startswith('#'):
+        h = s[1:]
+        if len(h) == 6:
+            h += 'FF'
+        if len(h) == 8:
+            try:
                 rgba.red = int(h[0:2], 16) / 255.0
                 rgba.green = int(h[2:4], 16) / 255.0
                 rgba.blue = int(h[4:6], 16) / 255.0
                 rgba.alpha = int(h[6:8], 16) / 255.0
-            elif len(h) == 6:
-                rgba.red = int(h[0:2], 16) / 255.0
-                rgba.green = int(h[2:4], 16) / 255.0
-                rgba.blue = int(h[4:6], 16) / 255.0
-                rgba.alpha = 1.0
+                return rgba
+            except ValueError:
+                pass
+
+    # float RGB / RGBA
+    parts = s.split()
+    if len(parts) == 3:
+        parts.append('1.0')
+
+    if len(parts) == 4:
+        try:
+            rgba.red = max(0.0, min(1.0, float(parts[0])))
+            rgba.green = max(0.0, min(1.0, float(parts[1])))
+            rgba.blue = max(0.0, min(1.0, float(parts[2])))
+            rgba.alpha = max(0.0, min(1.0, float(parts[3])))
+            return rgba
         except ValueError:
-            rgba.alpha = 1.0
-        return rgba
-    parts = color_str.split()
-    try:
-        rgba.red = max(0, min(1, float(parts[0]))) if len(parts) > 0 else 0
-        rgba.green = max(0, min(1, float(parts[1]))) if len(parts) > 1 else 0
-        rgba.blue = max(0, min(1, float(parts[2]))) if len(parts) > 2 else 0
-        rgba.alpha = max(0, min(1, float(parts[3]))) if len(parts) > 3 else 1
-    except (ValueError, IndexError):
-        rgba.alpha = 1.0
+            pass
+
+    print(f"[ClassicWCM] Could not parse color: {color_str!r}", file=sys.stderr)
+    rgba.red = rgba.green = rgba.blue = 0.0
+    rgba.alpha = 1.0
     return rgba
 
 
@@ -377,20 +420,27 @@ class OptionWidget(Gtk.Box):
         self.set_margin_bottom(2)
 
         # Label
-        lbl = Gtk.Label(label=option.disp_name or option.name)
-        lbl.set_tooltip_text(option.tooltip or '')
-        lbl.set_size_request(LABEL_W, -1)
-        lbl.set_xalign(0)
-        self.append(lbl)
+        self.lbl = Gtk.Label(label=option.disp_name or option.name)
+        self.lbl.set_tooltip_text(option.tooltip or '')
+        self.lbl.set_size_request(LABEL_W, -1)
+        self.lbl.set_xalign(0)
+        self.lbl.set_hexpand(True)
+        self.lbl.set_halign(Gtk.Align.START)
+        self.append(self.lbl)
+
+        # Right-aligned area for editor buttons / controls
+        self.end_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        self.end_box.set_halign(Gtk.Align.END)
+        self.append(self.end_box)
 
         current = config.get_option(plugin.name, option.name)
         self._build(option, current)
 
         # Reset button
-        reset = Gtk.Button.new_from_icon_name('edit-clear')
-        reset.set_tooltip_text('Reset to default')
-        reset.connect('clicked', self._reset)
-        self.append(reset)
+        self.reset_btn = Gtk.Button.new_from_icon_name('edit-clear')
+        self.reset_btn.set_tooltip_text('Reset to default')
+        self.reset_btn.connect('clicked', self._reset)
+        self.end_box.append(self.reset_btn)
 
     def _build(self, opt, cur):
         ot = opt.type
@@ -404,13 +454,16 @@ class OptionWidget(Gtk.Box):
                 self.ed.set_active_id(str(cv))
                 self.ed.connect('changed', lambda w: self._save(w.get_active_id() or '0'))
             else:
-                adj = Gtk.Adjustment(value=_int(cur, opt.default_value),
-                                     lower=opt.min_val, upper=min(opt.max_val, 2**31-1),
-                                     step_increment=1)
+                adj = Gtk.Adjustment(
+                    value=_int(cur, opt.default_value),
+                    lower=opt.min_val,
+                    upper=min(opt.max_val, 2**31 - 1),
+                    step_increment=1
+                )
                 self.ed = Gtk.SpinButton(adjustment=adj)
                 self.ed.connect('value-changed', lambda w: self._save(str(w.get_value_as_int())))
-            self.ed.set_hexpand(True)
-            self.append(self.ed)
+            self.ed.set_hexpand(False)
+            self.end_box.append(self.ed)
 
         elif ot == OptionType.DOUBLE:
             try:
@@ -418,23 +471,27 @@ class OptionWidget(Gtk.Box):
             except (ValueError, TypeError):
                 v = 0.0
             dec = len(str(opt.precision).split('.')[-1]) if '.' in str(opt.precision) else 3
-            adj = Gtk.Adjustment(value=v, lower=max(opt.min_val, -1e15),
-                                 upper=min(opt.max_val, 1e15),
-                                 step_increment=opt.precision)
+            adj = Gtk.Adjustment(
+                value=v,
+                lower=max(opt.min_val, -1e15),
+                upper=min(opt.max_val, 1e15),
+                step_increment=opt.precision
+            )
             self.ed = Gtk.SpinButton(adjustment=adj, digits=dec)
-            self.ed.set_hexpand(True)
+            self.ed.set_hexpand(False)
             self.ed.connect('value-changed', lambda w: self._save(str(w.get_value())))
-            self.append(self.ed)
+            self.end_box.append(self.ed)
 
         elif ot == OptionType.BOOL:
             self.ed = Gtk.CheckButton()
             if cur is not None:
-                self.ed.set_active(cur.lower() in ('true', '1', 'yes'))
+                self.ed.set_active(str(cur).strip().lower() in ('true', '1', 'yes', 'on'))
             else:
                 self.ed.set_active(bool(opt.default_value))
-            self.ed.set_hexpand(True)
+            self.ed.set_hexpand(False)
+            self.ed.set_halign(Gtk.Align.END)
             self.ed.connect('toggled', lambda w: self._save('true' if w.get_active() else 'false'))
-            self.append(self.ed)
+            self.end_box.append(self.ed)
 
         elif ot in (OptionType.STRING, OptionType.GESTURE):
             if opt.str_labels:
@@ -444,56 +501,77 @@ class OptionWidget(Gtk.Box):
                 cv = cur if cur is not None else str(opt.default_value or '')
                 self.ed.set_active_id(cv)
                 self.ed.connect('changed', lambda w: self._save(w.get_active_id() or ''))
+                self.ed.set_hexpand(False)
+                self.end_box.append(self.ed)
             else:
+                entry_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
+
                 self.ed = Gtk.Entry()
                 self.ed.set_text(cur if cur is not None else str(opt.default_value or ''))
+                self.ed.set_hexpand(False)
+                self.ed.set_size_request(260, -1)
                 self.ed.connect('activate', lambda w: self._save(w.get_text()))
                 fc = Gtk.EventControllerFocus()
                 fc.connect('leave', lambda c: self._save(self.ed.get_text()))
                 self.ed.add_controller(fc)
+                entry_box.append(self.ed)
+
                 if 'directory' in opt.hints:
                     b = Gtk.Button.new_from_icon_name('folder-open')
                     b.set_tooltip_text('Choose Directory')
                     b.connect('clicked', self._choose_dir)
-                    self.append(b)
+                    entry_box.append(b)
+
                 if 'file' in opt.hints:
                     b = Gtk.Button.new_from_icon_name('document-open')
                     b.set_tooltip_text('Choose File')
                     b.connect('clicked', self._choose_file)
-                    self.append(b)
-            self.ed.set_hexpand(True)
-            self.append(self.ed)
+                    entry_box.append(b)
+
+                self.end_box.append(entry_box)
 
         elif ot in (OptionType.KEY, OptionType.BUTTON, OptionType.ACTIVATOR):
             box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
             self.ed = Gtk.Entry()
             self.ed.set_text(cur if cur is not None else str(opt.default_value or ''))
-            self.ed.set_hexpand(True)
+            self.ed.set_hexpand(False)
+            self.ed.set_size_request(260, -1)
             self.ed.connect('activate', lambda w: self._save(w.get_text()))
             fc = Gtk.EventControllerFocus()
             fc.connect('leave', lambda c: self._save(self.ed.get_text()))
             self.ed.add_controller(fc)
             box.append(self.ed)
+
             grab = Gtk.Button(label='…')
             grab.set_tooltip_text('Grab key/button binding')
             grab.connect('clicked', self._grab_key)
             box.append(grab)
-            box.set_hexpand(True)
-            self.append(box)
+
+            self.end_box.append(box)
 
         elif ot == OptionType.COLOR:
             cs = cur if cur is not None else str(opt.default_value or '0.0 0.0 0.0 1.0')
             self.ed = Gtk.ColorButton()
             self.ed.set_use_alpha(True)
             self.ed.set_rgba(parse_color(cs))
+            self.ed.set_hexpand(False)
+            self.ed.set_halign(Gtk.Align.END)
             self.ed.connect('color-set', self._on_color_set)
-            self.append(self.ed)
+            self.end_box.append(self.ed)
 
         elif ot == OptionType.ANIMATION:
             dur, easing = _parse_anim(
-                cur if cur is not None else str(opt.default_value or '300ms linear'))
-            adj = Gtk.Adjustment(value=dur, lower=opt.min_val,
-                                 upper=min(opt.max_val, 100000), step_increment=1)
+                cur if cur is not None else str(opt.default_value or '300ms linear')
+            )
+
+            box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
+
+            adj = Gtk.Adjustment(
+                value=dur,
+                lower=opt.min_val,
+                upper=min(opt.max_val, 100000),
+                step_increment=1
+            )
             self._aspin = Gtk.SpinButton(adjustment=adj)
             self._acb = Gtk.ComboBoxText()
             for e in ('linear', 'circle', 'sigmoid'):
@@ -501,18 +579,22 @@ class OptionWidget(Gtk.Box):
             for i, e in enumerate(('linear', 'circle', 'sigmoid')):
                 if e == easing:
                     self._acb.set_active(i)
+
             self._aspin.connect('value-changed', lambda w: self._save_anim())
             self._acb.connect('changed', lambda w: self._save_anim())
-            self.append(self._aspin)
-            self.append(self._acb)
+
+            box.append(self._aspin)
+            box.append(self._acb)
+            self.end_box.append(box)
             self.ed = self._aspin
 
         else:
             self.ed = Gtk.Entry()
             self.ed.set_text(cur if cur is not None else str(opt.default_value or ''))
-            self.ed.set_hexpand(True)
+            self.ed.set_hexpand(False)
+            self.ed.set_size_request(260, -1)
             self.ed.connect('activate', lambda w: self._save(w.get_text()))
-            self.append(self.ed)
+            self.end_box.append(self.ed)
 
     def _save(self, val):
         if self._block:
@@ -540,14 +622,16 @@ class OptionWidget(Gtk.Box):
     def _choose_dir(self, btn):
         dlg = Gtk.FileChooserNative(
             title='Select Directory', transient_for=self.get_root(),
-            action=Gtk.FileChooserAction.SELECT_FOLDER)
+            action=Gtk.FileChooserAction.SELECT_FOLDER
+        )
         dlg.connect('response', self._on_file_response)
         dlg.show()
 
     def _choose_file(self, btn):
         dlg = Gtk.FileChooserNative(
             title='Select File', transient_for=self.get_root(),
-            action=Gtk.FileChooserAction.OPEN)
+            action=Gtk.FileChooserAction.OPEN
+        )
         dlg.connect('response', self._on_file_response)
         dlg.show()
 
@@ -567,29 +651,38 @@ class OptionWidget(Gtk.Box):
                     self.ed.set_active_id(str(d))
                 else:
                     self.ed.set_value(d if isinstance(d, int) else 0)
+
             elif self.option.type == OptionType.DOUBLE:
                 self.ed.set_value(d if isinstance(d, float) else 0.0)
+
             elif self.option.type == OptionType.BOOL:
                 self.ed.set_active(bool(d))
-            elif self.option.type in (OptionType.STRING, OptionType.KEY,
-                                      OptionType.BUTTON, OptionType.ACTIVATOR,
-                                      OptionType.GESTURE):
+
+            elif self.option.type in (
+                OptionType.STRING, OptionType.KEY,
+                OptionType.BUTTON, OptionType.ACTIVATOR,
+                OptionType.GESTURE
+            ):
                 if self.option.str_labels:
                     self.ed.set_active_id(str(d or ''))
                 else:
                     self.ed.set_text(str(d or ''))
+
             elif self.option.type == OptionType.COLOR:
                 self.ed.set_rgba(parse_color(str(d or '0 0 0 1')))
+
             elif self.option.type == OptionType.ANIMATION:
                 dur, easing = _parse_anim(str(d or '300ms linear'))
                 self._aspin.set_value(dur)
                 for i, e in enumerate(('linear', 'circle', 'sigmoid')):
                     if e == easing:
                         self._acb.set_active(i)
+                        break
+
         finally:
             self._block = False
-        self._save(str(d or ''))
 
+        self._save(str(d or ''))
 
 class SubgroupWidget(Gtk.Frame):
     """Expandable subgroup — mirrors C++ OptionSubgroupWidget."""
