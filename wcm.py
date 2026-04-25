@@ -331,11 +331,24 @@ def find_icon(name):
         p = os.path.join(_wcm_icon_dir, name)
         if os.path.isfile(p):
             return p
+    # Fallback: search standard wayfire icon directories
+    # (covers icons from wayfire-plugins-extra and other packages)
+    for prefix in ('/usr', '/usr/local', os.path.expanduser('~/.local')):
+        p = os.path.join(prefix, 'share', 'wayfire', 'icons', name)
+        if os.path.isfile(p):
+            return p
     return ''
 
 
 def find_plugin_icon(plugin_name):
-    return find_icon(f"plugin-{plugin_name}.svg") or None
+    # Try exact name first, then hyphen/underscore variants
+    for name in (plugin_name,
+                 plugin_name.replace('_', '-'),
+                 plugin_name.replace('-', '_')):
+        path = find_icon(f"plugin-{name}.svg")
+        if path:
+            return path
+    return None
 
 
 def find_app_icon():
@@ -424,17 +437,26 @@ class OptionWidget(Gtk.Box):
         self.lbl.set_tooltip_text(option.tooltip or '')
         self.lbl.set_size_request(LABEL_W, -1)
         self.lbl.set_xalign(0)
-        self.lbl.set_hexpand(True)
+        self.lbl.set_hexpand(False)
         self.lbl.set_halign(Gtk.Align.START)
         self.append(self.lbl)
 
         # Right-aligned area for editor buttons / controls
         self.end_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
-        self.end_box.set_halign(Gtk.Align.END)
+        self.end_box.set_hexpand(True)
+        self.end_box.set_halign(Gtk.Align.FILL)
         self.append(self.end_box)
 
         current = config.get_option(plugin.name, option.name)
         self._build(option, current)
+
+        # Compact widgets (checkbox, color, spinbutton) stay right-aligned;
+        # expanding widgets (entries, combos) fill the row
+        if option.type in (OptionType.BOOL, OptionType.COLOR,
+                           OptionType.DOUBLE) or (
+                option.type == OptionType.INT and not option.int_labels):
+            self.end_box.set_hexpand(True)
+            self.end_box.set_halign(Gtk.Align.END)
 
         # Reset button
         self.reset_btn = Gtk.Button.new_from_icon_name('edit-clear')
@@ -453,6 +475,7 @@ class OptionWidget(Gtk.Box):
                 cv = _int(cur, opt.default_value)
                 self.ed.set_active_id(str(cv))
                 self.ed.connect('changed', lambda w: self._save(w.get_active_id() or '0'))
+                self.ed.set_hexpand(True)
             else:
                 adj = Gtk.Adjustment(
                     value=_int(cur, opt.default_value),
@@ -462,7 +485,7 @@ class OptionWidget(Gtk.Box):
                 )
                 self.ed = Gtk.SpinButton(adjustment=adj)
                 self.ed.connect('value-changed', lambda w: self._save(str(w.get_value_as_int())))
-            self.ed.set_hexpand(False)
+                self.ed.set_hexpand(False)
             self.end_box.append(self.ed)
 
         elif ot == OptionType.DOUBLE:
@@ -501,15 +524,15 @@ class OptionWidget(Gtk.Box):
                 cv = cur if cur is not None else str(opt.default_value or '')
                 self.ed.set_active_id(cv)
                 self.ed.connect('changed', lambda w: self._save(w.get_active_id() or ''))
-                self.ed.set_hexpand(False)
+                self.ed.set_hexpand(True)
                 self.end_box.append(self.ed)
             else:
                 entry_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
+                entry_box.set_hexpand(True)
 
                 self.ed = Gtk.Entry()
                 self.ed.set_text(cur if cur is not None else str(opt.default_value or ''))
-                self.ed.set_hexpand(False)
-                self.ed.set_size_request(260, -1)
+                self.ed.set_hexpand(True)
                 self.ed.connect('activate', lambda w: self._save(w.get_text()))
                 fc = Gtk.EventControllerFocus()
                 fc.connect('leave', lambda c: self._save(self.ed.get_text()))
@@ -532,10 +555,10 @@ class OptionWidget(Gtk.Box):
 
         elif ot in (OptionType.KEY, OptionType.BUTTON, OptionType.ACTIVATOR):
             box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
+            box.set_hexpand(True)
             self.ed = Gtk.Entry()
             self.ed.set_text(cur if cur is not None else str(opt.default_value or ''))
-            self.ed.set_hexpand(False)
-            self.ed.set_size_request(260, -1)
+            self.ed.set_hexpand(True)
             self.ed.connect('activate', lambda w: self._save(w.get_text()))
             fc = Gtk.EventControllerFocus()
             fc.connect('leave', lambda c: self._save(self.ed.get_text()))
@@ -591,8 +614,7 @@ class OptionWidget(Gtk.Box):
         else:
             self.ed = Gtk.Entry()
             self.ed.set_text(cur if cur is not None else str(opt.default_value or ''))
-            self.ed.set_hexpand(False)
-            self.ed.set_size_request(260, -1)
+            self.ed.set_hexpand(True)
             self.ed.connect('activate', lambda w: self._save(w.get_text()))
             self.end_box.append(self.ed)
 
@@ -715,6 +737,7 @@ class PluginPage(Gtk.Notebook):
     def __init__(self, plugin, config):
         super().__init__()
         self.set_scrollable(True)
+        self._bindings_rendered = False
 
         for group in plugin.option_groups:
             if group.type != OptionType.GROUP or group.hidden:
@@ -762,6 +785,9 @@ class PluginPage(Gtk.Notebook):
         if any('binding' in p for p in prefixes) or option.name in (
                 'bindings', 'repeatable_bindings', 'always_bindings',
                 'release_bindings'):
+            if self._bindings_rendered:
+                return None
+            self._bindings_rendered = True
             return self._make_bindings_list(option, config, plugin, sopts)
 
         # Generic compound: show as labeled rows
@@ -862,7 +888,7 @@ class PluginPage(Gtk.Notebook):
     # ── Command bindings list (mirrors C++ BindingsDynamicList) ──
 
     def _make_bindings_list(self, option, config, plugin, sopts):
-        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
 
         # Find all unique command names (suffixes after command_)
         cmd_names = []
@@ -877,12 +903,14 @@ class PluginPage(Gtk.Notebook):
 
         # Add button
         add_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
+        add_box.set_hexpand(True)
         add_btn = Gtk.Button.new_from_icon_name('list-add')
         add_btn.set_tooltip_text('Add command binding')
         add_btn.set_halign(Gtk.Align.END)
         add_btn.connect('clicked', lambda w: self._add_binding(config, plugin, box))
         add_box.append(add_btn)
         add_box.set_halign(Gtk.Align.END)
+        add_box.set_margin_top(6)
         box.append(add_box)
 
         return box
@@ -922,8 +950,14 @@ class PluginPage(Gtk.Notebook):
 
         # Expander frame
         frame = Gtk.Frame()
+        frame.set_margin_top(1)
+        frame.set_margin_bottom(1)
         exp = Gtk.Expander(label=f"Command {cmd_name}: {command_val}")
         exp.set_expanded(not command_val)  # expand if command is empty
+        exp.set_margin_top(4)
+        exp.set_margin_bottom(4)
+        exp.set_margin_start(4)
+        exp.set_margin_end(4)
 
         vbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
         vbox.set_margin_start(5); vbox.set_margin_end(5)
@@ -1136,11 +1170,15 @@ class PluginButtonWidget(Gtk.Box):
 
         # Icon — 32px, same as Gtk::ICON_SIZE_DND
         icon_path = find_plugin_icon(plugin.name)
+        if not icon_path:
+            # Fallback to Wayfire/WCM icon, matching C++ WCM behavior
+            icon_path = (find_icon('wcm.svg') or find_icon('wcm.png')
+                         or find_icon('wayfire.svg') or find_icon('wayfire.png'))
         if icon_path:
             img = Gtk.Image.new_from_file(icon_path)
             img.set_pixel_size(32)
         else:
-            img = Gtk.Image.new_from_icon_name('application-x-executable')
+            img = Gtk.Image.new_from_icon_name('preferences-system')
             img.set_pixel_size(32)
         btn_box.append(img)
 
@@ -1231,27 +1269,12 @@ class MainPage(Gtk.ScrolledWindow):
 
     def set_filter(self, text):
         self._filter_text = text.lower()
-        cat_visible = {cn: False for cn, _ in CATEGORIES}
 
         for cn in CATEGORY_NAMES:
             title, fb, sep = self.cat_data[cn]
             fb.invalidate_filter()
 
-            # Check if any child is visible
-            has_visible = False
-            child = fb.get_first_child()
-            while child:
-                if child.get_visible():
-                    has_visible = True
-                    break
-                child = child.get_next_sibling()
-            # Use a small delay to let filter apply, then update visibility
-            cat_visible[cn] = has_visible
-            title.set_visible(has_visible)
-            fb.set_visible(has_visible)
-            sep.set_visible(has_visible)
-
-        # Re-check after filter propagates
+        # Update category visibility after filter invalidation
         GLib.idle_add(self._update_cat_visibility)
 
     def _update_cat_visibility(self):
@@ -1260,9 +1283,15 @@ class MainPage(Gtk.ScrolledWindow):
             has_visible = False
             child = fb.get_first_child()
             while child:
-                if child.get_visible():
-                    has_visible = True
-                    break
+                widget = child.get_child()
+                if widget and hasattr(widget, 'plugin'):
+                    p = widget.plugin
+                    if not self._filter_text or (
+                        self._filter_text in p.name.lower()
+                        or self._filter_text in p.disp_name.lower()
+                        or self._filter_text in p.tooltip.lower()):
+                        has_visible = True
+                        break
                 child = child.get_next_sibling()
             title.set_visible(has_visible)
             fb.set_visible(has_visible)
