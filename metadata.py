@@ -7,6 +7,7 @@ available plugins and their configurable options.
 
 import os
 import glob
+import shutil
 import subprocess
 from enum import Enum, auto
 from dataclasses import dataclass, field
@@ -316,11 +317,26 @@ def _pkg_config_var(pkg, var):
     return ''
 
 
+def _wayfire_prefix():
+    """Derive the install prefix from the wayfire binary location.
+
+    Mirrors how the C++ WCM gets WAYFIRE_METADATADIR at build time —
+    equivalent to: WF_BIN="$(command -v wayfire)"; echo "${WF_BIN%/bin/wayfire}"
+    """
+    wf_bin = shutil.which('wayfire')
+    if wf_bin:
+        # e.g. /opt/wayfire/bin/wayfire -> /opt/wayfire
+        # Resolve symlinks so we get the real install prefix
+        wf_bin = os.path.realpath(wf_bin)
+        return os.path.dirname(os.path.dirname(wf_bin))
+    return ''
+
+
 def find_metadata_dirs():
     """Find wayfire metadata directories on the system."""
     dirs = []
 
-    # 1. Environment variable (highest priority)
+    # 1. Environment variable override (highest priority, user-specified)
     env_path = os.environ.get('WAYFIRE_PLUGIN_XML_PATH', '')
     if env_path:
         for d in env_path.split(':'):
@@ -328,7 +344,15 @@ def find_metadata_dirs():
             if d and os.path.isdir(d) and d not in dirs:
                 dirs.append(d)
 
-    # 2. pkg-config (best for finding actual install location)
+    # 2. Default: derive from wayfire binary location
+    #    This is the most reliable method — works for any install prefix
+    bin_prefix = _wayfire_prefix()
+    if bin_prefix:
+        d = os.path.join(bin_prefix, 'share', 'wayfire', 'metadata')
+        if os.path.isdir(d) and d not in dirs:
+            dirs.append(d)
+
+    # 3. pkg-config (works when dev packages are installed)
     pkg_meta = _pkg_config_var('wayfire', 'metadatadir')
     if pkg_meta and os.path.isdir(pkg_meta) and pkg_meta not in dirs:
         dirs.append(pkg_meta)
@@ -339,16 +363,18 @@ def find_metadata_dirs():
         if os.path.isdir(d) and d not in dirs:
             dirs.append(d)
 
-    # 3. Standard paths
+    # 4. Standard paths
     for prefix in ('/usr', '/usr/local', os.path.expanduser('~/.local')):
         d = os.path.join(prefix, 'share', 'wayfire', 'metadata')
         if os.path.isdir(d) and d not in dirs:
             dirs.append(d)
 
-    # 4. Glob search as last resort
-    for d in glob.glob('/usr/*/share/wayfire/metadata'):
-        if os.path.isdir(d) and d not in dirs:
-            dirs.append(d)
+    # 5. Glob search as last resort
+    for pattern in ('/usr/*/share/wayfire/metadata',
+                    '/opt/*/share/wayfire/metadata'):
+        for d in glob.glob(pattern):
+            if os.path.isdir(d) and d not in dirs:
+                dirs.append(d)
 
     return dirs
 
@@ -361,10 +387,22 @@ def find_wfshell_metadata_dirs():
     if pkg_meta and os.path.isdir(pkg_meta) and pkg_meta not in dirs:
         dirs.append(pkg_meta)
 
+    # Derive from wayfire binary location
+    bin_prefix = _wayfire_prefix()
+    if bin_prefix:
+        d = os.path.join(bin_prefix, 'share', 'wayfire', 'metadata', 'wf-shell')
+        if os.path.isdir(d) and d not in dirs:
+            dirs.append(d)
+
     for prefix in ('/usr', '/usr/local', os.path.expanduser('~/.local')):
         d = os.path.join(prefix, 'share', 'wayfire', 'metadata', 'wf-shell')
         if os.path.isdir(d) and d not in dirs:
             dirs.append(d)
+
+    for pattern in ('/opt/*/share/wayfire/metadata/wf-shell',):
+        for d in glob.glob(pattern):
+            if os.path.isdir(d) and d not in dirs:
+                dirs.append(d)
 
     return dirs
 

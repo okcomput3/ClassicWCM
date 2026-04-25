@@ -642,20 +642,22 @@ class OptionWidget(Gtk.Box):
         return False
 
     def _choose_dir(self, btn):
-        dlg = Gtk.FileChooserNative(
+        # Store reference on self to prevent GC before response callback fires
+        self._file_dlg = Gtk.FileChooserNative(
             title='Select Directory', transient_for=self.get_root(),
             action=Gtk.FileChooserAction.SELECT_FOLDER
         )
-        dlg.connect('response', self._on_file_response)
-        dlg.show()
+        self._file_dlg.connect('response', self._on_file_response)
+        self._file_dlg.show()
 
     def _choose_file(self, btn):
-        dlg = Gtk.FileChooserNative(
+        # Store reference on self to prevent GC before response callback fires
+        self._file_dlg = Gtk.FileChooserNative(
             title='Select File', transient_for=self.get_root(),
             action=Gtk.FileChooserAction.OPEN
         )
-        dlg.connect('response', self._on_file_response)
-        dlg.show()
+        self._file_dlg.connect('response', self._on_file_response)
+        self._file_dlg.show()
 
     def _on_file_response(self, dlg, response):
         if response == Gtk.ResponseType.ACCEPT:
@@ -663,6 +665,8 @@ class OptionWidget(Gtk.Box):
             if f:
                 self.ed.set_text(f.get_path())
                 self._save(f.get_path())
+        dlg.destroy()
+        self._file_dlg = None
 
     def _reset(self, btn):
         d = self.option.default_value
@@ -1109,17 +1113,20 @@ class PluginPage(Gtk.Notebook):
         parent_box.remove(row)
 
     def _choose_exec(self, entry):
-        dlg = Gtk.FileChooserNative(
+        # Store reference on self to prevent GC before response callback fires
+        self._exec_dlg = Gtk.FileChooserNative(
             title='Choose Executable', transient_for=self.get_root(),
             action=Gtk.FileChooserAction.OPEN)
-        dlg.connect('response', lambda d, r, e=entry: self._on_exec_response(d, r, e))
-        dlg.show()
+        self._exec_dlg.connect('response', lambda d, r, e=entry: self._on_exec_response(d, r, e))
+        self._exec_dlg.show()
 
     def _on_exec_response(self, dlg, response, entry):
         if response == Gtk.ResponseType.ACCEPT:
             f = dlg.get_file()
             if f:
                 entry.set_text(f.get_path())
+        dlg.destroy()
+        self._exec_dlg = None
 
     def _run_cmd(self, cmd):
         if cmd:
